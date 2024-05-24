@@ -81,7 +81,7 @@ class TabularGenerator(nn.Module):
 class HighResCritic(nn.Module):
     def __init__(self, img_shape):
         super(HighResCritic, self).__init__()
-        self.model = nn.Sequential(
+        self.conv = nn.Sequential(
             nn.Conv3d(img_shape[0], 64, 3, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
@@ -97,17 +97,32 @@ class HighResCritic(nn.Module):
             nn.BatchNorm3d(512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
-            nn.Flatten(),
-            nn.Linear(512 * 4 * 4 * 4, 1)
+            nn.Conv3d(512, 1024, 3, 2, 1),
+            nn.BatchNorm3d(1024),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.25)
+        )
+        self.flatten = nn.Flatten()
+        conv_output_size = 1024 * 9 * 16 * 16
+        self.fc = nn.Sequential(
+            nn.Linear(conv_output_size, 1),
+            nn.Sigmoid()
         )
 
     def forward(self, img):
-        return self.model(img)
+        print('input shape =', img.shape)
+        conv_out = self.conv(img)
+        print('conv shape =', conv_out.shape)
+        flat_out = self.flatten(conv_out)
+        print('flatten shape =', flat_out.shape)
+        validity = self.fc(flat_out)
+        print('fc shape =', validity.shape)
+        return validity
 
 class LowResCritic(nn.Module):
     def __init__(self, img_shape):
         super(LowResCritic, self).__init__()
-        self.model = nn.Sequential(
+        self.conv = nn.Sequential(
             nn.Conv3d(img_shape[0], 64, 3, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
@@ -119,28 +134,51 @@ class LowResCritic(nn.Module):
             nn.BatchNorm3d(256),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
-            nn.Flatten(),
-            nn.Linear(256 * 4 * 4 * 4, 1)
+            nn.Conv3d(256, 512, 3, 2, 1),
+            nn.BatchNorm3d(512),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.25),
+            nn.Conv3d(512, 1024, 3, 2, 1),
+            nn.BatchNorm3d(1024),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.25)
+        )
+        self.flatten = nn.Flatten()
+        conv_output_size = 1024 * 1 * 1 * 1
+        self.fc = nn.Sequential(
+            nn.Linear(conv_output_size, 1),
+            nn.Sigmoid()
         )
 
     def forward(self, img):
-        return self.model(img)
+        print('input shape =', img.shape)
+        conv_out = self.conv(img)
+        print('conv shape =', conv_out.shape)
+        flat_out = self.flatten(conv_out)
+        print('flatten shape =', flat_out.shape)
+        validity = self.fc(flat_out)
+        print('fc shape =', validity.shape)
+        return validity
 
 class TabularCritic(nn.Module):
     def __init__(self):
         super(TabularCritic, self).__init__()
         self.model = nn.Sequential(
-            nn.Linear(1, 128),
+            nn.Linear(38, 128),  # Adjusted input size from 1 to 38
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
             nn.Linear(128, 256),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.25),
-            nn.Linear(256, 1)
+            nn.Linear(256, 1),
+            nn.Sigmoid()
         )
 
     def forward(self, data):
-        return self.model(data)
+        print('tabular input =', data.shape)
+        out = self.model(data)  # Corrected variable name from `out` to `data`
+        print('tabular linear =', out.shape)
+        return out
 
 # Gradient penalty function
 def compute_gradient_penalty(D, real_samples, fake_samples):

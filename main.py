@@ -1,112 +1,124 @@
 import torch
+import torch.nn as nn
 import torch.optim as optim
-from torch.autograd import grad
-from models import SharedGenerator, HighResGenerator, LowResGenerator, TabularGenerator, HighResCritic, LowResCritic, TabularCritic, compute_gradient_penalty
+from torch.utils.data import DataLoader
 from dataloader import get_data_loader
+from models import SharedGenerator, HighResGenerator, LowResGenerator, HighResCritic, LowResCritic, TabularCritic
 
-# Training parameters
-latent_dim = 100
-num_classes = 10
-img_shape = (1, 64, 64, 64)
-batch_size = 64
-epochs = 10000
-lr = 0.0002
-b1 = 0.5
-b2 = 0.999
-lambda_gp = 10
+def normalize_image(image):
+    min_val = image.min()
+    max_val = image.max()
+    normalized_image = (image - min_val) / (max_val - min_val)
+    return normalized_image
 
-# Prepare the dataset
-dataloader = get_data_loader(batch_size)
+def train_model():
+    annotations_file = '/annotations.csv'
+    batch_size = 4
+    dataloader = get_data_loader(batch_size, annotations_file)
 
-# Initialize models
-shared_generator = SharedGenerator(latent_dim, num_classes)
-high_res_generator = HighResGenerator()
-low_res_generator = LowResGenerator()
-tabular_generator = TabularGenerator()
-high_res_critic = HighResCritic(img_shape)
-low_res_critic = LowResCritic(img_shape)
-tabular_critic = TabularCritic()
+    latent_dim = 100
+    num_classes = 2
+    high_res_img_shape = (1, 257, 512, 512)  # High-resolution image shape
+    low_res_img_shape = (1, 32, 32, 32)      # Low-resolution image shape
 
-# Optimizers
-optimizer_G = optim.Adam(
-    list(shared_generator.parameters()) + 
-    list(high_res_generator.parameters()) + 
-    list(low_res_generator.parameters()) + 
-    list(tabular_generator.parameters()), lr=lr, betas=(b1, b2)
-)
-optimizer_D_high_res = optim.Adam(high_res_critic.parameters(), lr=lr, betas=(b1, b2))
-optimizer_D_low_res = optim.Adam(low_res_critic.parameters(), lr=lr, betas=(b1, b2))
-optimizer_D_tabular = optim.Adam(tabular_critic.parameters(), lr=lr, betas=(b1, b2))
+    shared_gen = SharedGenerator(latent_dim, num_classes)
+    high_res_gen = HighResGenerator()
+    low_res_gen = LowResGenerator()
+    high_res_critic = HighResCritic(high_res_img_shape)
+    low_res_critic = LowResCritic(low_res_img_shape)
+    tabular_critic = TabularCritic()
 
-# Training loop
-for epoch in range(epochs):
-    for i, (ct_imgs, clinical_data, labels) in enumerate(dataloader):
+    optimizer_G = optim.Adam(
+        list(shared_gen.parameters()) + 
+        list(high_res_gen.parameters()) + 
+        list(low_res_gen.parameters()), lr=0.0002, betas=(0.5, 0.999))
+    optimizer_D_high_res = optim.Adam(high_res_critic.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    optimizer_D_low_res = optim.Adam(low_res_critic.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    optimizer_D_tabular = optim.Adam(tabular_critic.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
-        batch_size = ct_imgs.size(0)
+    criterion_adv = nn.BCELoss()
+    criterion_aux = nn.CrossEntropyLoss()
 
-        # Configure input
-        real_ct_imgs = ct_imgs.type(torch.FloatTensor)
-        real_clinical_data = clinical_data.type(torch.FloatTensor)
-        labels = labels.type(torch.LongTensor)
+    num_epochs = 100
 
-        valid = torch.ones(batch_size, 1, requires_grad=False)
-        fake = torch.zeros(batch_size, 1, requires_grad=False)
+    for epoch in range(num_epochs):
+        for i, (images, clinical_data, labels) in enumerate(dataloader):
+            batch_size = images.size(0)
 
-        # -----------------
-        #  Train Generator
-        # -----------------
+            real_labels = torch.full((batch_size, 1), 1, dtype=torch.float)
+            fake_labels = torch.full((batch_size, 1), 0, dtype=torch.float)
+            
+            print(f'real_labels: {real_labels}')
+            print(f'fake_labels: {fake_labels}')
 
-        optimizer_G.zero_grad()
-        z = torch.randn(batch_size, latent_dim)
-        gen_labels = torch.randint(0, num_classes, (batch_size,))
-        shared_features = shared_generator(z, gen_labels)
-        gen_high_res_imgs = high_res_generator(shared_features)
-        gen_low_res_imgs = low_res_generator(shared_features)
-        gen_tabular_data = tabular_generator(shared_features.view(batch_size, -1))
+            noise = torch.randn(batch_size, latent_dim)
+            gen_labels = torch.randint(0, num_classes, (batch_size,))
 
-        g_loss_high_res = -torch.mean(high_res_critic(gen_high_res_imgs))
-        g_loss_low_res = -torch.mean(low_res_critic(gen_low_res_imgs))
-        g_loss_tabular = -torch.mean(tabular_critic(gen_tabular_data))
+            # Update High Res Critic with high-resolution real images
+            optimizer_D_high_res.zero_grad()
+            high_res_images = images  # Assume these are high-resolution images
+            high_res_images = normalize_image(high_res_images)
+            print(f"Normalized high res real image shape: {high_res_images.shape}, min: {high_res_images.min()}, max: {high_res_images.max()}")
 
-        g_loss = (g_loss_high_res + g_loss_low_res + g_loss_tabular) / 3
+            # Update High Res Critic with high-resolution real images
+            optimizer_D_high_res.zero_grad()
+            validity_real_high_res = high_res_critic(high_res_images)
+            d_loss_real_high_res = criterion_adv(validity_real_high_res, real_labels)
 
-        g_loss.backward()
-        optimizer_G.step()
+            fake_images_high_res = high_res_gen(shared_gen(noise, gen_labels))
+            fake_images_high_res = normalize_image(fake_images_high_res)
+            print(f"Fake high-res image shape: {fake_images_high_res.shape}, min: {fake_images_high_res.min()}, max: {fake_images_high_res.max()}")
+            validity_fake_high_res = low_res_critic(fake_images_high_res.detach())
+            d_loss_fake_high_res = criterion_adv(validity_fake_high_res, fake_labels)
 
-        # ---------------------
-        #  Train Discriminator
-        # ---------------------
+            d_loss_high_res = d_loss_real_high_res + d_loss_fake_high_res
+            d_loss_high_res.backward()
+            optimizer_D_high_res.step()
 
-        optimizer_D_high_res.zero_grad()
-        d_loss_high_res_real = -torch.mean(high_res_critic(real_ct_imgs))
-        d_loss_high_res_fake = torch.mean(high_res_critic(gen_high_res_imgs.detach()))
-        gradient_penalty_high_res = compute_gradient_penalty(high_res_critic, real_ct_imgs.data, gen_high_res_imgs.data)
-        d_loss_high_res = d_loss_high_res_real + d_loss_high_res_fake + lambda_gp * gradient_penalty_high_res
-        d_loss_high_res.backward()
-        optimizer_D_high_res.step()
+            # Normalize low-resolution real images
+            low_res_images = low_res_gen(shared_gen(noise, gen_labels))  # Generate low-resolution images
+            low_res_images = normalize_image(low_res_images)
+            print(f"Low res real image shape: {low_res_images.shape}, min: {low_res_images.min()}, max: {low_res_images.max()}")
+            validity_real_low_res = low_res_critic(low_res_images)
+            d_loss_real_low_res = criterion_adv(validity_real_low_res, real_labels)
 
-        optimizer_D_low_res.zero_grad()
-        d_loss_low_res_real = -torch.mean(low_res_critic(real_ct_imgs))
-        d_loss_low_res_fake = torch.mean(low_res_critic(gen_low_res_imgs.detach()))
-        gradient_penalty_low_res = compute_gradient_penalty(low_res_critic, real_ct_imgs.data, gen_low_res_imgs.data)
-        d_loss_low_res = d_loss_low_res_real + d_loss_low_res_fake + lambda_gp * gradient_penalty_low_res
-        d_loss_low_res.backward()
-        optimizer_D_low_res.step()
+            fake_images_low_res = low_res_gen(shared_gen(noise, gen_labels))
+            fake_images_low_res = normalize_image(fake_images_low_res)
+            print(f"Fake low-res image shape: {fake_images_low_res.shape}, min: {fake_images_low_res.min()}, max: {fake_images_low_res.max()}")
+            validity_fake_low_res = low_res_critic(fake_images_low_res.detach())
+            d_loss_fake_low_res = criterion_adv(validity_fake_low_res, fake_labels)
 
-        optimizer_D_tabular.zero_grad()
-        d_loss_tabular_real = -torch.mean(tabular_critic(real_clinical_data))
-        d_loss_tabular_fake = torch.mean(tabular_critic(gen_tabular_data.detach()))
-        gradient_penalty_tabular = compute_gradient_penalty(tabular_critic, real_clinical_data.data, gen_tabular_data.data)
-        d_loss_tabular = d_loss_tabular_real + d_loss_tabular_fake + lambda_gp * gradient_penalty_tabular
-        d_loss_tabular.backward()
-        optimizer_D_tabular.step()
+            d_loss_low_res = d_loss_real_low_res + d_loss_fake_low_res
+            d_loss_low_res.backward()
+            optimizer_D_low_res.step()
 
-    print(f"[Epoch {epoch}/{epochs}] [D high res loss: {d_loss_high_res.item()}] [D low res loss: {d_loss_low_res.item()}] [D tabular loss: {d_loss_tabular.item()}] [G loss: {g_loss.item()}]")
+            # Update Tabular Critic
+            optimizer_D_tabular.zero_grad()
+            validity_real_tabular = tabular_critic(clinical_data)
+            d_loss_real_tabular = criterion_adv(validity_real_tabular, real_labels)
 
-    # Save generated samples every 200 epochs
-    if epoch % 200 == 0:
-        save_image(gen_high_res_imgs.data[:25], f"images/high_res_{epoch}.png", nrow=5, normalize=True)
-        save_image(gen_low_res_imgs.data[:25], f"images/low_res_{epoch}.png", nrow=5, normalize=True)
+            validity_fake_tabular = tabular_critic(clinical_data)
+            d_loss_fake_tabular = criterion_adv(validity_fake_tabular, fake_labels)
+
+            d_loss_tabular = d_loss_real_tabular + d_loss_fake_tabular
+            d_loss_tabular.backward()
+            optimizer_D_tabular.step()
+
+            # Update Generators
+            optimizer_G.zero_grad()
+            validity_fake_high_res = low_res_critic(fake_images_high_res)
+            validity_fake_low_res = low_res_critic(fake_images_low_res)
+            validity_fake_tabular = tabular_critic(clinical_data)
+            g_loss_high_res = criterion_adv(validity_fake_high_res, real_labels)
+            g_loss_low_res = criterion_adv(validity_fake_low_res, real_labels)
+            g_loss_tabular = criterion_adv(validity_fake_tabular, real_labels)
+            g_loss = g_loss_high_res + g_loss_low_res + g_loss_tabular
+            g_loss.backward()
+            optimizer_G.step()
+
+            if i % 50 == 0:
+                print(f'Epoch [{epoch}/{num_epochs}], Step [{i}/{len(dataloader)}], '
+                      f'D High Res Loss: {d_loss_high_res.item():.4f}, D Low Res Loss: {d_loss_low_res.item():.4f}, D Tabular Loss: {d_loss_tabular.item():.4f}, G Loss: {g_loss.item():.4f}')
 
 if __name__ == "__main__":
-    main()
+    train_model()
